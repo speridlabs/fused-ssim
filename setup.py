@@ -17,12 +17,6 @@ def log(msg):
 
 def configure_cuda():
     """Configure CUDA/ROCm backend."""
-    fallback_archs = [
-        "-gencode=arch=compute_75,code=sm_75",
-        "-gencode=arch=compute_80,code=sm_80",
-        "-gencode=arch=compute_89,code=sm_89",
-    ]
-
     log("Compiling for CUDA.")
     compiler_args = {"cxx": ["-O3"], "nvcc": ["-O3"]}
 
@@ -33,38 +27,13 @@ def configure_cuda():
     else:
         compiler_args["nvcc"].extend(("--maxrregcount=32", "--use_fast_math"))
 
-        # Check for CUDA_ARCHITECTURES environment variable first
-        cuda_archs_env = os.environ.get('CUDA_ARCHITECTURES')
-        arch_configured = False
-
-        if cuda_archs_env:
-            try:
-                archs = [arch.strip() for arch in cuda_archs_env.split(';')]
-                log(f"Using CUDA architectures from environment: {archs}")
-                for arch in archs:
-                    compiler_args["nvcc"].append(f"-gencode=arch=compute_{arch},code=sm_{arch}")
-                detected_arch = f"env:{','.join(archs)}"
-                arch_configured = True
-            except Exception as e:
-                log(f"Failed to parse CUDA_ARCHITECTURES environment variable: {e}. Trying device detection.")
-
-        # Try device detection if environment variable not set or failed
-        if not arch_configured:
-            try:
-                device = torch.cuda.current_device()
-                compute_capability = torch.cuda.get_device_capability(device)
-                arch = f"sm_{compute_capability[0]}{compute_capability[1]}"
-                log(f"Detected GPU architecture: {arch}")
-                compiler_args["nvcc"].append(f"-arch={arch}")
-                detected_arch = arch
-                arch_configured = True
-            except Exception as e:
-                log(f"Failed to detect GPU architecture: {e}. Falling back to multiple architectures.")
-
-        # Fallback to multiple architectures if both methods failed
-        if not arch_configured:
-            compiler_args["nvcc"].extend(fallback_archs)
-            detected_arch = "multiple architectures"
+        # If the user set TORCH_CUDA_ARCH_LIST, PyTorch will honor it.
+        # If not set, we set a conservative default list.
+        if not os.environ.get("TORCH_CUDA_ARCH_LIST"):
+            # "Common" modern archs; adjust if you want broader/leaner.
+            os.environ["TORCH_CUDA_ARCH_LIST"] = "7.5;8.0;8.6;8.9;9.0;12.0"
+            log(f"TORCH_CUDA_ARCH_LIST not set; defaulting to {os.environ['TORCH_CUDA_ARCH_LIST']}")
+        detected_arch = os.environ.get("TORCH_CUDA_ARCH_LIST")
 
     return CUDAExtension, "ssim.cu", "fused_ssim_cuda", compiler_args, [], detected_arch
 
@@ -115,7 +84,7 @@ class CustomBuildExtension(BuildExtension):
             self.compiler.compiler_cxx = ['icpx'] + self.compiler.compiler_cxx[1:]
             self.compiler.linker_so = ['icpx'] + self.compiler.linker_so[1:]
 
-        arch_info = f"Building with GPU architecture: {detected_arch if detected_arch else 'multiple architectures'}"
+        arch_info = f"Building with TORCH_CUDA_ARCH_LIST: {os.environ.get('TORCH_CUDA_ARCH_LIST','(not set)')}"
         print("\n" + "="*50)
         print(arch_info)
         print("="*50 + "\n")
